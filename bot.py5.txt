@@ -1,0 +1,125 @@
+import os
+import telebot
+import requests
+from google import genai
+
+# ==================== API KALITLAR ====================
+BOT_TOKEN = "8845399684:AAHhjCpKXFHRy4uoYcifxBvA78YgButCHEM"
+GEMINI_API_KEY = "AQ.Ab8RN6K4G_VWrVgcLVxIbx_HRaMtuYhWUPOUEr7116JAahXowg"
+WEATHER_API_KEY = "c89c85befd8c497936b561207e185936"
+# =======================================================
+
+bot = telebot.TeleBot(BOT_TOKEN)
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
+
+# 1. /start buyrug'i
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    text = (
+        "Salom! Men ko'p funksiyali Telegram botman.\n\n"
+        "🔹 **AI bilan muloqot**: Shunchaki xabar yozing.\n"
+        "🔹 **Ob-havo**: `/obhavo Toshkent` deb yozing.\n"
+        "🔹 **Valyuta kursi**: `/valyuta` deb yozing."
+    )
+    bot.reply_to(message, text, parse_mode="Markdown")
+
+# 2. Valyuta kursi (/valyuta)
+@bot.message_handler(commands=['valyuta', 'rate'])
+def get_currency(message):
+    status_msg = bot.reply_to(message, "💱 Markaziy Bank kurslari olinmoqda...")
+    url = "https://cbu.uz/uz/arkhiv-kursov-valyut/json/"
+    
+    try:
+        response = requests.get(url, timeout=10).json()
+        currencies = ['USD', 'EUR', 'RUB']
+        rates = {}
+
+        for item in response:
+            if item['Ccy'] in currencies:
+                rates[item['Ccy']] = {
+                    'rate': item['Rate'],
+                    'diff': item['Diff']
+                }
+
+        msg = "🏦 **Markaziy Bank rasmiy valyuta kurslari:**\n\n"
+        if 'USD' in rates:
+            msg += f"🇺🇸 **1 USD** = {rates['USD']['rate']} so'm ({rates['USD']['diff']})\n"
+        if 'EUR' in rates:
+            msg += f"🇪🇺 **1 EUR** = {rates['EUR']['rate']} so'm ({rates['EUR']['diff']})\n"
+        if 'RUB' in rates:
+            msg += f"🇷🇺 **1 RUB** = {rates['RUB']['rate']} so'm ({rates['RUB']['diff']})\n"
+
+        bot.edit_message_text(msg, message.chat.id, status_msg.message_id, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Valyuta xatosi: {e}")
+        bot.edit_message_text("❌ Valyuta kurslarini olishda xatolik yuz berdi.", message.chat.id, status_msg.message_id)
+
+# 3. Ob-havo buyrug'i (/obhavo shahar_nomi)
+@bot.message_handler(commands=['obhavo', 'weather'])
+def get_weather(message):
+    try:
+        city = message.text.split(maxsplit=1)[1]
+    except IndexError:
+        bot.reply_to(message, "Iltimos, shahar nomini ham yozing!\nMasalan: `/obhavo Toshkent`", parse_mode="Markdown")
+        return
+
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric&lang=uz"
+    
+    try:
+        res = requests.get(url, timeout=10).json()
+        if res.get("cod") != 200:
+            bot.reply_to(message, "🏢 Shahar topilmadi. Nomi to'g'ri yozilganini tekshiring.")
+            return
+
+        temp = res["main"]["temp"]
+        feels_like = res["main"]["feels_like"]
+        desc = res["weather"][0]["description"].capitalize()
+        humidity = res["main"]["humidity"]
+        wind = res["wind"]["speed"]
+
+        report = (
+            f"🌍 **{city.capitalize()} shahridagi ob-havo:**\n\n"
+            f"🌡 Harorat: **{temp}°C** (Hiss qilinishi: {feels_like}°C)\n"
+            f"☁️ Holat: **{desc}**\n"
+            f"💧 Namlik: **{humidity}%**\n"
+            f"💨 Shamol: **{wind} m/s**"
+        )
+        bot.reply_to(message, report, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Ob-havo xatosi: {e}")
+        bot.reply_to(message, "Ob-havo ma'lumotini olishda xatolik bo'ldi.")
+
+# 4. Gemini AI (Matnli xabarlar uchun zaxira modellar bilan)
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    status_msg = bot.reply_to(message, "O'ylayapman...")
+    
+    # Ishlaydigan rasmiy modellar tartibi
+    models_to_try = ['gemini-3.6-flash']
+    response_text = None
+
+    for model_name in models_to_try:
+        try:
+            response = ai_client.models.generate_content(
+                model=model_name,
+                contents=message.text
+            )
+            response_text = response.text
+            if response_text:
+                break
+        except Exception as e:
+            print(f"{model_name} modelida xato: {e}")
+            continue
+
+    if response_text:
+        try:
+            bot.delete_message(message.chat.id, status_msg.message_id)
+            bot.send_message(message.chat.id, response_text)
+        except Exception:
+            bot.edit_message_text(response_text, message.chat.id, status_msg.message_id)
+    else:
+        bot.edit_message_text("❌ So'rovni bajarishda xatolik bo'ldi. API kalitingizni tekshirib qayta urinib ko'ring.", message.chat.id, status_msg.message_id)
+
+if __name__ == '__main__':
+    print("Bot muvaffaqiyatli ishga tushdi...")
+    bot.infinity_polling(timeout=60, long_polling_timeout=60)
